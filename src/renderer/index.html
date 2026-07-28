@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self'" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VaultOTP</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-bg" aria-hidden="true"></div>
+
+  <header class="titlebar" aria-label="Window toolbar">
+    <div class="titlebar-drag">
+      <div class="titlebar-brand">
+        <div class="brand-mark sm" aria-hidden="true"></div>
+        <span>VaultOTP</span>
+      </div>
+    </div>
+    <div class="titlebar-controls">
+      <button type="button" id="win-min" class="win-btn" title="Minimize" aria-label="Minimize">
+        <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6h8"/></svg>
+      </button>
+      <button type="button" id="win-max" class="win-btn" title="Maximize" aria-label="Maximize">
+        <svg id="win-max-icon" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="2.5" width="7" height="7" rx="0.5"/></svg>
+      </button>
+      <button type="button" id="win-close" class="win-btn close" title="Close" aria-label="Close">
+        <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 3l6 6M9 3L3 9"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="shell">
+  <!-- Lock / Setup -->
+  <section id="gate" class="gate hidden">
+    <div class="gate-panel">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"></div>
+        <h1>VaultOTP</h1>
+        <p id="gate-subtitle">Unlock your encrypted authenticator vault</p>
+      </div>
+
+      <form id="gate-form" class="gate-form" autocomplete="off">
+        <label class="field">
+          <span id="password-label">Master password</span>
+          <input id="password" type="password" required minlength="8" autofocus />
+        </label>
+        <label id="confirm-field" class="field hidden">
+          <span>Confirm password</span>
+          <input id="password-confirm" type="password" minlength="8" />
+        </label>
+        <p id="gate-error" class="error" role="alert"></p>
+        <button type="submit" id="gate-submit" class="btn primary">Unlock</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- Main vault -->
+  <section id="vault" class="vault hidden">
+    <header class="topbar">
+      <div class="topbar-actions">
+        <button type="button" id="btn-settings" class="btn ghost" title="Settings">Settings</button>
+        <button type="button" id="btn-lock" class="btn ghost" title="Lock vault">Lock</button>
+        <button type="button" id="btn-add" class="btn primary">Add account</button>
+      </div>
+    </header>
+
+    <div class="toolbar">
+      <input id="search" type="search" placeholder="Search accounts…" />
+      <button type="button" id="btn-toggle-codes" class="btn ghost btn-reveal" title="Show codes" aria-pressed="false">Show</button>
+      <span id="account-count" class="muted"></span>
+    </div>
+
+    <div id="empty" class="empty hidden">
+      <h2>No accounts yet</h2>
+      <p>Add a 2FA seed from any service to start generating codes.</p>
+      <button type="button" id="btn-empty-add" class="btn primary">Add your first account</button>
+    </div>
+
+    <div id="codes" class="codes" role="list"></div>
+  </section>
+  </div>
+
+  <!-- Account modal -->
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-panel">
+      <h2 id="modal-title">Add account</h2>
+      <form id="account-form" autocomplete="off">
+        <input type="hidden" id="account-id" />
+        <label class="field">
+          <span>Account name</span>
+          <input id="account-label" type="text" placeholder="e.g. Personal email" required />
+        </label>
+        <label class="field">
+          <span>Issuer <span class="optional">optional</span></span>
+          <input id="account-issuer" type="text" placeholder="e.g. Google, GitHub" />
+        </label>
+        <label class="field">
+          <span>Secret key</span>
+          <textarea id="account-secret" rows="2" placeholder="Base32 secret (otpauth://… also works)" required></textarea>
+        </label>
+        <p id="account-error" class="error" role="alert"></p>
+        <div class="modal-actions">
+          <button type="button" class="btn ghost" data-close>Cancel</button>
+          <button type="submit" class="btn primary" id="account-save">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Settings modal -->
+  <div id="settings-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="modal-backdrop" data-close-settings></div>
+    <div class="modal-panel">
+      <h2 id="settings-title">Settings</h2>
+
+      <label class="field">
+        <span>Auto-lock after idle</span>
+        <select id="auto-lock-minutes">
+          <option value="0">Off</option>
+          <option value="1">1 minute</option>
+          <option value="2">2 minutes</option>
+          <option value="5">5 minutes</option>
+          <option value="10">10 minutes</option>
+          <option value="15">15 minutes</option>
+        </select>
+      </label>
+
+      <div class="transfer-box">
+        <p class="muted settings-hint">Backup and restore encrypted seeds.</p>
+        <div class="transfer-actions">
+          <button type="button" id="btn-export" class="btn ghost">Export</button>
+          <button type="button" id="btn-import" class="btn ghost">Import</button>
+        </div>
+      </div>
+
+      <form id="password-form" autocomplete="off">
+        <p class="muted settings-hint">Change the master password that encrypts your vault.</p>
+        <label class="field">
+          <span>Current password</span>
+          <input id="pw-current" type="password" required minlength="8" />
+        </label>
+        <label class="field">
+          <span>New password</span>
+          <input id="pw-new" type="password" required minlength="8" />
+        </label>
+        <label class="field">
+          <span>Confirm new password</span>
+          <input id="pw-confirm" type="password" required minlength="8" />
+        </label>
+        <p id="settings-error" class="error" role="alert"></p>
+        <p id="settings-ok" class="success" role="status"></p>
+        <div class="modal-actions">
+          <button type="button" class="btn ghost" data-close-settings>Close</button>
+          <button type="submit" class="btn primary">Update password</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Transfer password modal -->
+  <div id="transfer-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="transfer-title">
+    <div class="modal-backdrop" data-transfer-cancel></div>
+    <div class="modal-panel confirm-panel">
+      <h2 id="transfer-title">Export backup</h2>
+      <p id="transfer-message" class="confirm-message"></p>
+      <form id="transfer-form" autocomplete="off">
+        <label id="transfer-password-field" class="field">
+          <span id="transfer-password-label">Master password</span>
+          <input id="transfer-password" type="password" minlength="8" />
+        </label>
+        <label id="transfer-replace-field" class="field check-field hidden">
+          <span class="check-row">
+            <input id="transfer-replace" type="checkbox" />
+            Replace existing accounts
+          </span>
+        </label>
+        <p id="transfer-error" class="error" role="alert"></p>
+        <div class="modal-actions">
+          <button type="button" class="btn ghost" data-transfer-cancel>Cancel</button>
+          <button type="submit" id="transfer-submit" class="btn primary">Continue</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Confirm modal -->
+  <div id="confirm-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <div class="modal-backdrop" data-confirm-cancel></div>
+    <div class="modal-panel confirm-panel">
+      <h2 id="confirm-title">Confirm</h2>
+      <p id="confirm-message" class="confirm-message"></p>
+      <div class="modal-actions">
+        <button type="button" id="confirm-cancel" class="btn ghost" data-confirm-cancel>Cancel</button>
+        <button type="button" id="confirm-ok" class="btn danger-solid">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
