@@ -9,6 +9,7 @@ Desktop 2FA authenticator built with Electron. Seeds are encrypted at rest with 
 - Live 6-digit codes with countdown ring
 - Click a code to copy
 - Accepts raw Base32 secrets or `otpauth://` URIs
+- Scan QR codes from image files or the screen
 - Change master password from Settings
 - Export / import encrypted seed backups (`.otpbak`)
 - Import plain JSON account lists or `otpauth://` URI text files

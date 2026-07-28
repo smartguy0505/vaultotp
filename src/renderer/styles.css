@@ -230,11 +230,35 @@ button {
   gap: 7px;
 }
 
-.field span {
-  font-size: 0.82rem;
-  color: var(--muted);
-  font-weight: 500;
+.field-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
+
+.seed-actions {
+  display: inline-flex;
+  gap: 10px;
+}
+
+.link-btn {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  padding: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.link-btn:hover {
+  text-decoration: underline;
+}
+
+.link-btn.hidden {
+  display: none;
+}
+
 
 .optional {
   opacity: 0.7;
@@ -431,6 +455,14 @@ button {
   line-height: 1.5;
   font-size: 0.9rem;
 }
+
+.empty-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
 
 .code-row {
   display: grid;

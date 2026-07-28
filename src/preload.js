@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('api', {
   unlock: (password) => ipcRenderer.invoke('vault:unlock', password),
   lock: () => ipcRenderer.invoke('vault:lock'),
   list: () => ipcRenderer.invoke('vault:list'),
+  getSecret: (id) => ipcRenderer.invoke('vault:getSecret', id),
   add: (account) => ipcRenderer.invoke('vault:add', account),
   update: (id, patch) => ipcRenderer.invoke('vault:update', id, patch),
   remove: (id) => ipcRenderer.invoke('vault:remove', id),
@@ -16,6 +17,8 @@ contextBridge.exposeInMainWorld('api', {
   importPick: () => ipcRenderer.invoke('vault:importPick'),
   importBackup: (filePath, password, replace) =>
     ipcRenderer.invoke('vault:import', filePath, password, replace),
+  scanQrImage: () => ipcRenderer.invoke('qr:scanImage'),
+  scanQrScreen: () => ipcRenderer.invoke('qr:scanScreen'),
   copy: (text) => ipcRenderer.invoke('clipboard:write', text),
   windowMinimize: () => ipcRenderer.invoke('window:minimize'),
   windowMaximize: () => ipcRenderer.invoke('window:maximize'),

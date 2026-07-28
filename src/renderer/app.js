@@ -23,6 +23,12 @@ const accountIssuer = document.getElementById('account-issuer');
 const accountSecret = document.getElementById('account-secret');
 const accountError = document.getElementById('account-error');
 const accountSave = document.getElementById('account-save');
+const seedActions = document.getElementById('seed-actions');
+const btnToggleSeed = document.getElementById('btn-toggle-seed');
+const btnCopySeed = document.getElementById('btn-copy-seed');
+
+let revealedSeed = null;
+let seedVisible = false;
 
 const settingsModal = document.getElementById('settings-modal');
 const passwordForm = document.getElementById('password-form');
@@ -114,6 +120,7 @@ async function autoLockVault() {
   closeAccountModal();
   closeSettings();
   closeTransferModal();
+  closeScanModal();
   closeConfirm(false);
   setCodesVisible(false);
   await window.api.lock();
@@ -327,10 +334,21 @@ function stopPolling() {
   }
 }
 
-function openAccountModal(mode, account) {
+function resetSeedRevealUi() {
+  revealedSeed = null;
+  seedVisible = false;
+  seedActions.classList.add('hidden');
+  btnCopySeed.classList.add('hidden');
+  btnToggleSeed.textContent = 'Show seed';
+  accountSecret.readOnly = false;
+}
+
+function openAccountModal(mode, account, preset) {
   accountError.textContent = '';
   accountForm.reset();
   accountId.value = '';
+  resetSeedRevealUi();
+
   if (mode === 'edit' && account) {
     modalTitle.textContent = 'Edit account';
     accountSave.textContent = 'Update';
@@ -338,13 +356,19 @@ function openAccountModal(mode, account) {
     accountLabel.value = account.label || '';
     accountIssuer.value = account.issuer || '';
     accountSecret.value = '';
-    accountSecret.placeholder = 'Leave blank to keep current secret';
+    accountSecret.placeholder = 'Hidden — click Show seed, or paste a new secret';
     accountSecret.required = false;
+    seedActions.classList.remove('hidden');
   } else {
     modalTitle.textContent = 'Add account';
     accountSave.textContent = 'Save';
     accountSecret.placeholder = 'Base32 secret (otpauth://… also works)';
     accountSecret.required = true;
+    if (preset) {
+      accountLabel.value = preset.label || '';
+      accountIssuer.value = preset.issuer || '';
+      accountSecret.value = preset.secret || '';
+    }
   }
   modal.classList.remove('hidden');
   accountLabel.focus();
@@ -352,6 +376,36 @@ function openAccountModal(mode, account) {
 
 function closeAccountModal() {
   modal.classList.add('hidden');
+  resetSeedRevealUi();
+  accountSecret.value = '';
+}
+
+const scanModal = document.getElementById('scan-modal');
+const scanError = document.getElementById('scan-error');
+
+function openScanModal() {
+  scanError.textContent = '';
+  scanModal.classList.remove('hidden');
+}
+
+function closeScanModal() {
+  scanModal.classList.add('hidden');
+  scanError.textContent = '';
+}
+
+async function handleScanResult(res) {
+  if (!res.ok) {
+    if (res.canceled) return;
+    scanError.textContent = res.error || 'Could not scan QR code';
+    return;
+  }
+  closeScanModal();
+  openAccountModal('add', null, {
+    label: res.label || '',
+    issuer: res.issuer || '',
+    secret: res.secret || '',
+  });
+  showToast('QR code detected');
 }
 
 function openSettings() {
@@ -478,7 +532,70 @@ document.getElementById('btn-lock').addEventListener('click', async () => {
 
 document.getElementById('btn-add').addEventListener('click', () => openAccountModal('add'));
 document.getElementById('btn-empty-add').addEventListener('click', () => openAccountModal('add'));
+document.getElementById('btn-scan').addEventListener('click', openScanModal);
+document.getElementById('btn-empty-scan').addEventListener('click', openScanModal);
 document.getElementById('btn-settings').addEventListener('click', openSettings);
+
+btnToggleSeed.addEventListener('click', async () => {
+  const id = accountId.value;
+  if (!id) return;
+  accountError.textContent = '';
+
+  if (seedVisible) {
+    seedVisible = false;
+    accountSecret.value = '';
+    accountSecret.placeholder = 'Hidden — click Show seed, or paste a new secret';
+    btnToggleSeed.textContent = 'Show seed';
+    btnCopySeed.classList.add('hidden');
+    return;
+  }
+
+  if (!revealedSeed) {
+    const res = await window.api.getSecret(id);
+    if (!res.ok) {
+      accountError.textContent = res.error || 'Could not load seed';
+      return;
+    }
+    revealedSeed = res.account.secret;
+  }
+
+  seedVisible = true;
+  accountSecret.value = revealedSeed;
+  accountSecret.placeholder = '';
+  btnToggleSeed.textContent = 'Hide seed';
+  btnCopySeed.classList.remove('hidden');
+});
+
+btnCopySeed.addEventListener('click', async () => {
+  const value = accountSecret.value.trim() || revealedSeed;
+  if (!value) return;
+  await window.api.copy(value);
+  showToast('Seed copied');
+});
+
+document.getElementById('btn-scan-image').addEventListener('click', async () => {
+  scanError.textContent = '';
+  const res = await window.api.scanQrImage();
+  await handleScanResult(res);
+});
+
+document.getElementById('btn-scan-screen').addEventListener('click', async () => {
+  scanError.textContent = '';
+  closeScanModal();
+  const res = await window.api.scanQrScreen();
+  if (!res.ok) {
+    if (!res.canceled) {
+      openScanModal();
+      scanError.textContent = res.error || 'Could not scan QR code';
+    }
+    return;
+  }
+  await handleScanResult(res);
+});
+
+scanModal.querySelectorAll('[data-close-scan]').forEach((el) => {
+  el.addEventListener('click', closeScanModal);
+});
 document.getElementById('btn-export').addEventListener('click', openExportModal);
 document.getElementById('btn-import').addEventListener('click', async () => {
   closeSettings();
@@ -666,6 +783,10 @@ document.addEventListener('keydown', (e) => {
     }
     if (!transferModal.classList.contains('hidden')) {
       closeTransferModal();
+      return;
+    }
+    if (!scanModal.classList.contains('hidden')) {
+      closeScanModal();
       return;
     }
     closeAccountModal();

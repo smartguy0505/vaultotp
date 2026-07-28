@@ -141,6 +141,18 @@ function listAccounts() {
   }));
 }
 
+function getSecret(id) {
+  requireUnlocked();
+  const account = accounts.find((a) => a.id === id);
+  if (!account) throw new Error('Account not found');
+  return {
+    id: account.id,
+    label: account.label,
+    issuer: account.issuer,
+    secret: account.secret,
+  };
+}
+
 function sanitizeAccountInput(input) {
   const label = String(input.label || '').trim();
   const issuer = String(input.issuer || '').trim();
@@ -448,6 +460,7 @@ module.exports = {
   unlock,
   lock,
   listAccounts,
+  getSecret,
   addAccount,
   updateAccount,
   removeAccount,
@@ -456,4 +469,5 @@ module.exports = {
   exportBackupToFile,
   importBackupFromFile,
   inspectBackupFile,
+  parseOtpAuthUri,
 };

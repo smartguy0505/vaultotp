@@ -1,9 +1,117 @@
-const { app, BrowserWindow, ipcMain, clipboard, nativeTheme, Menu, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, clipboard, nativeTheme, Menu, dialog, desktopCapturer, screen } = require('electron');
 const path = require('path');
 const vault = require('./vault');
+const qr = require('./qr');
 
 let mainWindow = null;
+let regionWindow = null;
 const APP_ICON = path.join(__dirname, '..', 'assets', 'icon.ico');
+
+function restoreMainWindow() {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function closeRegionWindow() {
+  if (!regionWindow) return;
+  try {
+    regionWindow.close();
+  } catch {
+    // ignore
+  }
+  regionWindow = null;
+}
+
+async function captureDisplayImage(display) {
+  const width = Math.max(800, Math.round(display.size.width * (display.scaleFactor || 1)));
+  const height = Math.max(600, Math.round(display.size.height * (display.scaleFactor || 1)));
+  const sources = await desktopCapturer.getSources({
+    types: ['screen'],
+    thumbnailSize: { width, height },
+  });
+  if (!sources.length) throw new Error('No screen sources available');
+
+  const matched =
+    sources.find((source) => String(source.display_id) === String(display.id)) || sources[0];
+  if (!matched || matched.thumbnail.isEmpty()) {
+    throw new Error('Could not capture screen');
+  }
+  return matched.thumbnail;
+}
+
+function selectQrRegion(display, screenshot) {
+  return new Promise((resolve) => {
+    closeRegionWindow();
+
+    const imageSize = screenshot.getSize();
+    let settled = false;
+
+    regionWindow = new BrowserWindow({
+      x: display.bounds.x,
+      y: display.bounds.y,
+      width: display.bounds.width,
+      height: display.bounds.height,
+      frame: false,
+      transparent: false,
+      resizable: false,
+      movable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      skipTaskbar: true,
+      alwaysOnTop: true,
+      show: false,
+      backgroundColor: '#000000',
+      webPreferences: {
+        preload: path.join(__dirname, 'region-preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+      },
+    });
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      ipcMain.removeListener('region:result', onResult);
+      const win = regionWindow;
+      regionWindow = null;
+      if (win && !win.isDestroyed()) {
+        win.removeAllListeners('closed');
+        win.close();
+      }
+      resolve(result);
+    };
+
+    const onResult = (_event, payload) => {
+      finish(payload || { ok: false, canceled: true });
+    };
+
+    ipcMain.on('region:result', onResult);
+
+    regionWindow.on('closed', () => {
+      regionWindow = null;
+      finish({ ok: false, canceled: true });
+    });
+
+    regionWindow.loadFile(path.join(__dirname, 'renderer', 'region-select.html'));
+    regionWindow.once('ready-to-show', () => {
+      if (!regionWindow || regionWindow.isDestroyed()) return;
+      regionWindow.show();
+      regionWindow.setAlwaysOnTop(true, 'screen-saver');
+      regionWindow.focus();
+      regionWindow.webContents.send('region:init', {
+        dataUrl: screenshot.toDataURL(),
+        displayWidth: display.bounds.width,
+        displayHeight: display.bounds.height,
+        imageWidth: imageSize.width,
+        imageHeight: imageSize.height,
+      });
+    });
+  });
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -114,6 +222,14 @@ ipcMain.handle('vault:list', () => {
   }
 });
 
+ipcMain.handle('vault:getSecret', (_e, id) => {
+  try {
+    return { ok: true, account: vault.getSecret(id) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
 ipcMain.handle('vault:add', async (_e, account) => {
   try {
     const created = await vault.addAccount(account);
@@ -206,6 +322,65 @@ ipcMain.handle('vault:import', async (_e, filePath, password, replace) => {
     const summary = vault.importBackupFromFile(filePath, password, { replace: Boolean(replace) });
     return { ok: true, ...summary };
   } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('qr:scanImage', async () => {
+  try {
+    if (!mainWindow) throw new Error('Window unavailable');
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Select QR code image',
+      properties: ['openFile'],
+      filters: [
+        { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp'] },
+        { name: 'All Files', extensions: ['*'] },
+      ],
+    });
+    if (result.canceled || !result.filePaths || !result.filePaths[0]) {
+      return { ok: false, canceled: true };
+    }
+    const raw = qr.decodeQrFromFile(result.filePaths[0]);
+    const parsed = qr.parseScannedPayload(raw);
+    return { ok: true, ...parsed };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('qr:scanScreen', async () => {
+  try {
+    if (mainWindow) {
+      mainWindow.hide();
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    }
+
+    const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+    const screenshot = await captureDisplayImage(display);
+    const selection = await selectQrRegion(display, screenshot);
+
+    restoreMainWindow();
+
+    if (!selection || selection.canceled || !selection.ok) {
+      return { ok: false, canceled: true };
+    }
+
+    const rect = selection.rect || {};
+    const x = Math.max(0, Math.round(rect.x || 0));
+    const y = Math.max(0, Math.round(rect.y || 0));
+    const width = Math.max(1, Math.round(rect.width || 0));
+    const height = Math.max(1, Math.round(rect.height || 0));
+    if (width < 8 || height < 8) {
+      throw new Error('Selected region is too small');
+    }
+
+    const cropped = screenshot.crop({ x, y, width, height });
+    const raw = qr.decodeQrFromNativeImage(cropped);
+    const parsed = qr.parseScannedPayload(raw);
+    return { ok: true, ...parsed };
+  } catch (err) {
+    closeRegionWindow();
+    restoreMainWindow();
     return { ok: false, error: err.message };
   }
 });

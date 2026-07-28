@@ -64,7 +64,8 @@
       <div class="topbar-actions">
         <button type="button" id="btn-settings" class="btn ghost" title="Settings">Settings</button>
         <button type="button" id="btn-lock" class="btn ghost" title="Lock vault">Lock</button>
-        <button type="button" id="btn-add" class="btn primary">Add account</button>
+        <button type="button" id="btn-scan" class="btn ghost" title="Scan QR code">Scan QR</button>
+        <button type="button" id="btn-add" class="btn primary">Add</button>
       </div>
     </header>
 
@@ -76,8 +77,11 @@
 
     <div id="empty" class="empty hidden">
       <h2>No accounts yet</h2>
-      <p>Add a 2FA seed from any service to start generating codes.</p>
-      <button type="button" id="btn-empty-add" class="btn primary">Add your first account</button>
+      <p>Add a 2FA seed or scan a QR code from any service.</p>
+      <div class="empty-actions">
+        <button type="button" id="btn-empty-scan" class="btn ghost">Scan QR</button>
+        <button type="button" id="btn-empty-add" class="btn primary">Add account</button>
+      </div>
     </div>
 
     <div id="codes" class="codes" role="list"></div>
@@ -100,7 +104,13 @@
           <input id="account-issuer" type="text" placeholder="e.g. Google, GitHub" />
         </label>
         <label class="field">
-          <span>Secret key</span>
+          <span class="field-label-row">
+            <span>Secret key</span>
+            <span id="seed-actions" class="seed-actions hidden">
+              <button type="button" id="btn-toggle-seed" class="link-btn">Show seed</button>
+              <button type="button" id="btn-copy-seed" class="link-btn hidden">Copy</button>
+            </span>
+          </span>
           <textarea id="account-secret" rows="2" placeholder="Base32 secret (otpauth://… also works)" required></textarea>
         </label>
         <p id="account-error" class="error" role="alert"></p>
@@ -109,6 +119,23 @@
           <button type="submit" class="btn primary" id="account-save">Save</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Scan QR modal -->
+  <div id="scan-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="scan-title">
+    <div class="modal-backdrop" data-close-scan></div>
+    <div class="modal-panel confirm-panel">
+      <h2 id="scan-title">Scan QR code</h2>
+      <p class="confirm-message">Import from an image, or capture the screen and drag a box around the QR code.</p>
+      <p id="scan-error" class="error" role="alert"></p>
+      <div class="transfer-actions">
+        <button type="button" id="btn-scan-image" class="btn primary">From image</button>
+        <button type="button" id="btn-scan-screen" class="btn ghost">From screen</button>
+      </div>
+      <div class="modal-actions" style="margin-top: 14px;">
+        <button type="button" class="btn ghost" data-close-scan>Cancel</button>
+      </div>
     </div>
   </div>
 

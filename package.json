@@ -31,11 +31,15 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "portable",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "artifactName": "${productName}-${version}-${os}-${arch}.${ext}"
@@ -57,5 +61,8 @@
   "devDependencies": {
     "electron": "^37.2.0",
     "electron-builder": "^26.0.12"
+  },
+  "dependencies": {
+    "jsqr": "^1.4.0"
   }
 }
