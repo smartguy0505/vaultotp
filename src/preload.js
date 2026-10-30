@@ -19,7 +19,7 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('vault:import', filePath, password, replace),
   scanQrImage: () => ipcRenderer.invoke('qr:scanImage'),
   scanQrScreen: () => ipcRenderer.invoke('qr:scanScreen'),
-  copy: (text) => ipcRenderer.invoke('clipboard:write', text),
+  copy: (text, options) => ipcRenderer.invoke('clipboard:write', text, options),
   windowMinimize: () => ipcRenderer.invoke('window:minimize'),
   windowMaximize: () => ipcRenderer.invoke('window:maximize'),
   windowClose: () => ipcRenderer.invoke('window:close'),

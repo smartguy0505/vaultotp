@@ -7,9 +7,11 @@ Desktop 2FA authenticator built with Electron. Seeds are encrypted at rest with 
 - Master-password vault (AES-256-GCM + PBKDF2)
 - Add / edit / delete TOTP accounts
 - Live 6-digit codes with countdown ring
-- Click a code to copy
+- Click a code to copy (clipboard clears after 30 seconds)
+- Press `/` to search, `Ctrl+N` to add, `Ctrl+L` to lock
 - Accepts raw Base32 secrets or `otpauth://` URIs
 - Scan QR codes from image files or the screen
+- Auto-lock after idle (mouse movement does not keep the vault open)
 - Change master password from Settings
 - Export / import encrypted seed backups (`.otpbak`)
 - Import plain JSON account lists or `otpauth://` URI text files
@@ -21,7 +23,7 @@ npm install
 npm start
 ```
 
-Or double-click `start.cmd`.
+Or double-click `start.cmd`. That script uses portable Node.js from the workspace `.tools\node-v*` folder.
 
 ## Build Windows app
 

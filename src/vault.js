@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { generateTotp, remainingSeconds, normalizeSecret } = require('./totp');
+const { generateTotp, remainingSeconds, normalizeSecret, normalizeTotpOptions, nowMs, getClockOffsetMs } = require('./totp');
 
 const VAULT_VERSION = 1;
 const PBKDF2_ITERATIONS = 310000;
@@ -22,7 +22,12 @@ function init() {
 
 function ensureVaultDir() {
   if (!vaultDir) throw new Error('Vault is not initialized');
-  fs.mkdirSync(vaultDir, { recursive: true });
+  fs.mkdirSync(vaultDir, { recursive: true, mode: 0o700 });
+  try {
+    fs.chmodSync(vaultDir, 0o700);
+  } catch {
+    // Windows may ignore POSIX modes
+  }
 }
 
 function vaultExists() {
@@ -34,6 +39,7 @@ function getStatus() {
     exists: vaultExists(),
     unlocked: masterKey !== null,
     count: masterKey ? accounts.length : 0,
+    clockOffsetMs: getClockOffsetMs(),
   };
 }
 
@@ -86,7 +92,12 @@ function persistWithCurrentKey() {
   const encryptedBlob = encryptPayload(masterKey, { accounts });
   const packed = packVaultFile(currentSalt, encryptedBlob);
   const tmp = `${vaultPath}.tmp`;
-  fs.writeFileSync(tmp, packed);
+  fs.writeFileSync(tmp, packed, { mode: 0o600 });
+  try {
+    fs.chmodSync(tmp, 0o600);
+  } catch {
+    // Windows may ignore POSIX modes
+  }
   fs.renameSync(tmp, vaultPath);
 }
 
@@ -153,26 +164,56 @@ function getSecret(id) {
   };
 }
 
+function totpOptionsFrom(input = {}) {
+  return normalizeTotpOptions({
+    algorithm: input.algorithm,
+    digits: input.digits,
+    period: input.period,
+  });
+}
+
 function sanitizeAccountInput(input) {
-  const label = String(input.label || '').trim();
-  const issuer = String(input.issuer || '').trim();
-  const secret = normalizeSecret(input.secret || '');
+  let label = String(input.label || '').trim();
+  let issuer = String(input.issuer || '').trim();
+  let secretRaw = String(input.secret || '').trim();
+  let algorithm = input.algorithm;
+  let digits = input.digits;
+  let period = input.period;
+
+  if (secretRaw.toLowerCase().startsWith('otpauth://')) {
+    const parsed = parseOtpAuthUri(secretRaw);
+    if (!parsed) throw new Error('Invalid otpauth URI');
+    if (parsed.type && parsed.type !== 'totp') {
+      throw new Error('Only TOTP accounts are supported');
+    }
+    secretRaw = parsed.secret;
+    if (!label) label = parsed.label;
+    if (!issuer) issuer = parsed.issuer;
+    if (algorithm == null) algorithm = parsed.algorithm;
+    if (digits == null) digits = parsed.digits;
+    if (period == null) period = parsed.period;
+  }
+
+  const secret = normalizeSecret(secretRaw);
   if (!label) throw new Error('Account name is required');
   if (!secret) throw new Error('Secret is required');
-  // Validate secret by generating once
-  generateTotp(secret);
-  return { label, issuer, secret };
+  const totp = totpOptionsFrom({ algorithm, digits, period });
+  generateTotp(secret, totp);
+  return { label, issuer, secret, ...totp };
 }
 
 async function addAccount(input) {
   requireUnlocked();
-  const { label, issuer, secret } = sanitizeAccountInput(input);
+  const { label, issuer, secret, algorithm, digits, period } = sanitizeAccountInput(input);
   const now = new Date().toISOString();
   const account = {
     id: crypto.randomUUID(),
     label,
     issuer,
     secret,
+    algorithm,
+    digits,
+    period,
     createdAt: now,
     updatedAt: now,
   };
@@ -186,14 +227,27 @@ async function updateAccount(id, patch) {
   const idx = accounts.findIndex((a) => a.id === id);
   if (idx === -1) throw new Error('Account not found');
   const current = accounts[idx];
+  let secretPatch = patch.secret;
+  let algorithm = patch.algorithm !== undefined ? patch.algorithm : current.algorithm;
+  let digits = patch.digits !== undefined ? patch.digits : current.digits;
+  let period = patch.period !== undefined ? patch.period : current.period;
+  if (typeof secretPatch === 'string' && secretPatch.trim().toLowerCase().startsWith('otpauth://')) {
+    const parsed = parseOtpAuthUri(secretPatch);
+    if (!parsed) throw new Error('Invalid otpauth URI');
+    secretPatch = parsed.secret;
+    algorithm = parsed.algorithm;
+    digits = parsed.digits;
+    period = parsed.period;
+  }
   const next = {
     label: patch.label !== undefined ? String(patch.label).trim() : current.label,
     issuer: patch.issuer !== undefined ? String(patch.issuer).trim() : current.issuer,
-    secret: patch.secret !== undefined ? normalizeSecret(patch.secret) : current.secret,
+    secret: secretPatch !== undefined ? normalizeSecret(secretPatch) : current.secret,
+    ...totpOptionsFrom({ algorithm, digits, period }),
   };
   if (!next.label) throw new Error('Account name is required');
   if (!next.secret) throw new Error('Secret is required');
-  generateTotp(next.secret);
+  generateTotp(next.secret, next);
   accounts[idx] = {
     ...current,
     ...next,
@@ -214,15 +268,19 @@ async function removeAccount(id) {
 
 function getCodes() {
   requireUnlocked();
-  const remaining = remainingSeconds();
-  return accounts.map((a) => ({
-    id: a.id,
-    label: a.label,
-    issuer: a.issuer,
-    code: generateTotp(a.secret),
-    remaining,
-    period: 30,
-  }));
+  const now = nowMs();
+  return accounts.map((a) => {
+    const totp = totpOptionsFrom(a);
+    return {
+      id: a.id,
+      label: a.label,
+      issuer: a.issuer,
+      code: generateTotp(a.secret, { ...totp, now }),
+      remaining: remainingSeconds(totp.period, now),
+      period: totp.period,
+      digits: totp.digits,
+    };
+  });
 }
 
 async function changePassword(currentPassword, newPassword) {
@@ -261,10 +319,13 @@ function createEncryptedBackup(password) {
 
   const salt = crypto.randomBytes(SALT_LEN);
   const key = deriveKey(password, salt);
-  const exportAccounts = accounts.map(({ label, issuer, secret, createdAt, updatedAt }) => ({
+  const exportAccounts = accounts.map(({ label, issuer, secret, algorithm, digits, period, createdAt, updatedAt }) => ({
     label,
     issuer,
     secret,
+    algorithm,
+    digits,
+    period,
     createdAt,
     updatedAt,
   }));
@@ -299,7 +360,19 @@ function parseOtpAuthUri(line) {
       if (!issuer) issuer = left;
       label = rest.join(':').trim() || left;
     }
-    return { label: label || 'Imported account', issuer, secret };
+    const type = String(url.hostname || '').toLowerCase() || 'totp';
+    const algorithm = url.searchParams.get('algorithm') || 'SHA1';
+    const digits = Number(url.searchParams.get('digits')) || 6;
+    const period = Number(url.searchParams.get('period')) || 30;
+    return {
+      label: label || 'Imported account',
+      issuer,
+      secret,
+      type,
+      algorithm,
+      digits,
+      period,
+    };
   } catch {
     return null;
   }
@@ -321,7 +394,10 @@ function normalizeImportedAccounts(rawAccounts) {
       sanitizeAccountInput({
         label: item.label || item.name || item.account || 'Imported account',
         issuer: item.issuer || '',
-        secret: item.secret || item.seed || '',
+        secret: item.secret || item.seed || item.uri || '',
+        algorithm: item.algorithm,
+        digits: item.digits,
+        period: item.period,
       })
     );
   }
@@ -393,6 +469,9 @@ function importAccountsList(incoming, { replace = false } = {}) {
       label: item.label,
       issuer: item.issuer,
       secret: item.secret,
+      algorithm: item.algorithm,
+      digits: item.digits,
+      period: item.period,
       createdAt: now,
       updatedAt: now,
     }));
@@ -409,6 +488,9 @@ function importAccountsList(incoming, { replace = false } = {}) {
         label: item.label,
         issuer: item.issuer,
         secret: item.secret,
+        algorithm: item.algorithm,
+        digits: item.digits,
+        period: item.period,
         createdAt: now,
         updatedAt: now,
       });

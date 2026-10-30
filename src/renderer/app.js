@@ -51,6 +51,8 @@ const transferError = document.getElementById('transfer-error');
 const transferSubmit = document.getElementById('transfer-submit');
 
 const toastEl = document.getElementById('toast');
+const pwStrength = document.getElementById('pw-strength');
+const pwStrengthLabel = document.getElementById('pw-strength-label');
 
 let isSetupMode = false;
 let pollTimer = null;
@@ -60,6 +62,7 @@ let vaultUnlocked = false;
 let confirmResolver = null;
 let transferMode = null;
 let pendingImportPath = null;
+let pendingTotpOpts = null;
 let latestCodes = [];
 let renderedListKey = '';
 const RING_CIRCUMFERENCE = 2 * Math.PI * 14;
@@ -139,32 +142,38 @@ function showToast(message) {
   toastEl.textContent = message;
   toastEl.classList.remove('hidden');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toastEl.classList.add('hidden'), 1600);
+  toastTimer = setTimeout(() => toastEl.classList.add('hidden'), 2200);
+}
+
+function notifyClockSkew(status) {
+  const skew = Number(status && status.clockOffsetMs);
+  if (!Number.isFinite(skew) || Math.abs(skew) < 15000) return;
+  const minutes = Math.max(1, Math.round(Math.abs(skew) / 60000));
+  showToast(`System clock is ${minutes} min off — codes use network time`);
 }
 
 function formatCode(code) {
-  if (!codesVisible) return '*** ***';
+  if (!codesVisible) return code && code.length >= 8 ? '•••• ••••' : '••• •••';
   if (!code || code.length < 6) return code || '------';
+  if (code.length === 7) return `${code.slice(0, 3)} ${code.slice(3)}`;
+  if (code.length === 8) return `${code.slice(0, 4)} ${code.slice(4)}`;
   return `${code.slice(0, 3)} ${code.slice(3)}`;
 }
 
+function issuerInitials(item) {
+  const source = String(item.issuer || item.label || '?').trim();
+  const parts = source.split(/[\s._-]+/).filter(Boolean);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return source.slice(0, 2).toUpperCase();
+}
+
 function parseSecretInput(raw) {
-  const value = String(raw || '').trim();
-  if (!value) return '';
-  if (value.toLowerCase().startsWith('otpauth://')) {
-    try {
-      const url = new URL(value);
-      const secret = url.searchParams.get('secret');
-      if (secret) return secret;
-    } catch {
-      // fall through
-    }
-  }
-  return value;
+  return String(raw || '').trim();
 }
 
 function setGateMode(exists) {
   isSetupMode = !exists;
+  pwStrength.classList.add('hidden');
   if (isSetupMode) {
     gateSubtitle.textContent = 'Create a master password to encrypt your 2FA seeds';
     passwordLabel.textContent = 'Create master password';
@@ -228,8 +237,9 @@ function updateCodeRow(row, item) {
   const offset = RING_CIRCUMFERENCE * (1 - item.remaining / item.period);
   const codeEl = row.querySelector('.code-value');
   const progress = row.querySelector('.ring .progress');
+  const remainEl = row.querySelector('.remain-label');
 
-  if (codeEl) {
+  if (codeEl && !codeEl.classList.contains('copied-flash')) {
     const nextText = formatCode(item.code);
     if (codeEl.textContent !== nextText) codeEl.textContent = nextText;
     if (codeEl.getAttribute('data-copy') !== item.code) {
@@ -237,13 +247,18 @@ function updateCodeRow(row, item) {
     }
     codeEl.classList.toggle('expiring', warn && codesVisible);
     codeEl.classList.toggle('masked', !codesVisible);
-    codeEl.title = codesVisible ? 'Click to copy' : 'Hidden — click Show, or click to copy';
+    codeEl.title = codesVisible ? 'Click to copy · clears in 30s' : 'Hidden — click to copy anyway';
   }
 
   if (progress) {
     progress.setAttribute('stroke-dasharray', String(RING_CIRCUMFERENCE));
     progress.setAttribute('stroke-dashoffset', String(offset));
     progress.classList.toggle('warn', warn);
+  }
+
+  if (remainEl) {
+    remainEl.textContent = `${item.remaining}s`;
+    remainEl.classList.toggle('warn', warn);
   }
 }
 
@@ -252,26 +267,28 @@ function buildRowHtml(item) {
   const offset = RING_CIRCUMFERENCE * (1 - item.remaining / item.period);
   return `
     <article class="code-row" role="listitem" data-id="${item.id}">
+      <div class="issuer-avatar" aria-hidden="true">${escapeHtml(issuerInitials(item))}</div>
       <div class="code-meta">
         <h3>${escapeHtml(item.label)}</h3>
         <p>${escapeHtml(item.issuer || 'Authenticator')}</p>
       </div>
+      <div class="row-actions">
+        <button type="button" class="icon-btn" data-edit="${item.id}" title="Edit" aria-label="Edit ${escapeHtml(item.label)}">
+          <svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+        </button>
+        <button type="button" class="icon-btn" data-delete="${item.id}" title="Delete" aria-label="Delete ${escapeHtml(item.label)}">
+          <svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>
+        </button>
+      </div>
       <div class="code-block">
-        <div class="code-value ${warn && codesVisible ? 'expiring' : ''} ${codesVisible ? '' : 'masked'}" data-copy="${item.code}" title="${codesVisible ? 'Click to copy' : 'Hidden — click Show, or click to copy'}">${formatCode(item.code)}</div>
+        <button type="button" class="code-value ${warn && codesVisible ? 'expiring' : ''} ${codesVisible ? '' : 'masked'}" data-copy="${escapeHtml(item.code)}" title="${codesVisible ? 'Click to copy · clears in 30s' : 'Hidden — click to copy anyway'}">${formatCode(item.code)}</button>
         <svg class="ring" viewBox="0 0 36 36" aria-hidden="true">
           <circle class="track" cx="18" cy="18" r="14"></circle>
           <circle class="progress ${warn ? 'warn' : ''}" cx="18" cy="18" r="14"
             stroke-dasharray="${RING_CIRCUMFERENCE}"
             stroke-dashoffset="${offset}"></circle>
         </svg>
-      </div>
-      <div class="row-actions">
-        <button type="button" class="icon-btn" data-edit="${item.id}" title="Edit">
-          <svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
-        </button>
-        <button type="button" class="icon-btn" data-delete="${item.id}" title="Delete">
-          <svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>
-        </button>
+        <span class="remain-label ${warn ? 'warn' : ''}">${item.remaining}s</span>
       </div>
     </article>
   `;
@@ -280,7 +297,8 @@ function buildRowHtml(item) {
 function renderCodes(forceRebuild = false) {
   const query = searchInput.value.trim().toLowerCase();
   const filtered = latestCodes.filter((c) => matchesSearch(c, query));
-  accountCount.textContent = `${latestCodes.length} account${latestCodes.length === 1 ? '' : 's'}`;
+  accountCount.textContent = String(latestCodes.length);
+  document.querySelector('.dock').classList.toggle('hidden', latestCodes.length === 0);
 
   if (latestCodes.length === 0) {
     emptyEl.classList.remove('hidden');
@@ -347,6 +365,7 @@ function openAccountModal(mode, account, preset) {
   accountError.textContent = '';
   accountForm.reset();
   accountId.value = '';
+  pendingTotpOpts = null;
   resetSeedRevealUi();
 
   if (mode === 'edit' && account) {
@@ -368,6 +387,11 @@ function openAccountModal(mode, account, preset) {
       accountLabel.value = preset.label || '';
       accountIssuer.value = preset.issuer || '';
       accountSecret.value = preset.secret || '';
+      pendingTotpOpts = {
+        algorithm: preset.algorithm,
+        digits: preset.digits,
+        period: preset.period,
+      };
     }
   }
   modal.classList.remove('hidden');
@@ -376,6 +400,7 @@ function openAccountModal(mode, account, preset) {
 
 function closeAccountModal() {
   modal.classList.add('hidden');
+  pendingTotpOpts = null;
   resetSeedRevealUi();
   accountSecret.value = '';
 }
@@ -404,6 +429,9 @@ async function handleScanResult(res) {
     label: res.label || '',
     issuer: res.issuer || '',
     secret: res.secret || '',
+    algorithm: res.algorithm,
+    digits: res.digits,
+    period: res.period,
   });
   showToast('QR code detected');
 }
@@ -518,10 +546,16 @@ gateForm.addEventListener('submit', async (e) => {
     }
   }
   showVault();
+  notifyClockSkew(await window.api.status());
 });
 
 document.getElementById('btn-lock').addEventListener('click', async () => {
   clearAutoLockTimer();
+  closeAccountModal();
+  closeSettings();
+  closeTransferModal();
+  closeScanModal();
+  closeConfirm(false);
   setCodesVisible(false);
   await window.api.lock();
   vaultUnlocked = false;
@@ -569,8 +603,8 @@ btnToggleSeed.addEventListener('click', async () => {
 btnCopySeed.addEventListener('click', async () => {
   const value = accountSecret.value.trim() || revealedSeed;
   if (!value) return;
-  await window.api.copy(value);
-  showToast('Seed copied');
+  await window.api.copy(value, { clearAfterMs: 30000 });
+  showToast('Seed copied · clipboard clears in 30s');
 });
 
 document.getElementById('btn-scan-image').addEventListener('click', async () => {
@@ -627,7 +661,7 @@ settingsModal.querySelectorAll('[data-close-settings]').forEach((el) => {
   el.addEventListener('click', closeSettings);
 });
 
-['pointerdown', 'keydown', 'mousemove', 'wheel', 'touchstart'].forEach((eventName) => {
+['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach((eventName) => {
   document.addEventListener(eventName, noteActivity, { passive: true });
 });
 
@@ -647,6 +681,7 @@ accountForm.addEventListener('submit', async (e) => {
     label: accountLabel.value.trim(),
     issuer: accountIssuer.value.trim(),
     secret: parseSecretInput(accountSecret.value),
+    ...(pendingTotpOpts || {}),
   };
 
   let res;
@@ -690,8 +725,23 @@ passwordForm.addEventListener('submit', async (e) => {
 codesEl.addEventListener('click', async (e) => {
   const copyEl = e.target.closest('[data-copy]');
   if (copyEl) {
-    await window.api.copy(copyEl.getAttribute('data-copy'));
-    showToast('Code copied');
+    const code = String(copyEl.getAttribute('data-copy') || '').replace(/\D/g, '');
+    await window.api.copy(code, { clearAfterMs: 30000 });
+    const row = copyEl.closest('.code-row');
+    if (row) {
+      row.classList.add('copied');
+      setTimeout(() => row.classList.remove('copied'), 700);
+    }
+    const previous = copyEl.textContent;
+    copyEl.classList.add('copied-flash');
+    copyEl.textContent = 'Copied';
+    setTimeout(() => {
+      copyEl.classList.remove('copied-flash');
+      const item = latestCodes.find((c) => c.id === row?.getAttribute('data-id'));
+      copyEl.textContent = item ? formatCode(item.code) : previous;
+    }, 700);
+    showToast('Code copied · clipboard clears in 30s');
+    noteActivity();
     return;
   }
 
@@ -775,7 +825,58 @@ transferModal.querySelectorAll('[data-transfer-cancel]').forEach((el) => {
   el.addEventListener('click', closeTransferModal);
 });
 
+document.querySelectorAll('[data-toggle-password]').forEach((button) => {
+  button.addEventListener('click', () => {
+    const input = document.getElementById(button.getAttribute('data-toggle-password'));
+    if (!input) return;
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    button.textContent = show ? 'Hide' : 'Show';
+    button.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+  });
+});
+
+function passwordScore(value) {
+  if (!value) return 0;
+  let score = 0;
+  if (value.length >= 8) score += 1;
+  if (value.length >= 12) score += 1;
+  if (/[a-z]/.test(value) && /[A-Z]/.test(value)) score += 1;
+  if (/\d/.test(value) && /[^A-Za-z0-9]/.test(value)) score += 1;
+  return Math.min(4, score);
+}
+
+passwordInput.addEventListener('input', () => {
+  if (!isSetupMode) {
+    pwStrength.classList.add('hidden');
+    return;
+  }
+  const score = passwordScore(passwordInput.value);
+  pwStrength.classList.toggle('hidden', score === 0);
+  pwStrength.dataset.level = String(score);
+  pwStrengthLabel.textContent = ['', 'Short', 'Okay', 'Strong', 'Excellent'][score] || '';
+});
+
 document.addEventListener('keydown', (e) => {
+  const typing = e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT');
+  const dialogOpen = [modal, settingsModal, scanModal, transferModal, confirmModal].some(
+    (el) => el && !el.classList.contains('hidden')
+  );
+  if (!typing && !dialogOpen && vaultUnlocked && e.key === '/') {
+    e.preventDefault();
+    searchInput.focus();
+    return;
+  }
+  if (!typing && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'l' && vaultUnlocked) {
+    e.preventDefault();
+    document.getElementById('btn-lock').click();
+    return;
+  }
+  if (!dialogOpen && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n' && vaultUnlocked) {
+    e.preventDefault();
+    openAccountModal('add');
+    return;
+  }
   if (e.key === 'Escape') {
     if (!confirmModal.classList.contains('hidden')) {
       closeConfirm(false);
@@ -828,5 +929,10 @@ confirmOk.addEventListener('click', () => closeConfirm(true));
     showVault();
   } else {
     showGate();
+  }
+  try {
+    notifyClockSkew(status);
+  } catch {
+    // ignore toast errors so the login form still appears
   }
 })();

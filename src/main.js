@@ -1,11 +1,26 @@
-const { app, BrowserWindow, ipcMain, clipboard, nativeTheme, Menu, dialog, desktopCapturer, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, clipboard, nativeTheme, Menu, dialog, desktopCapturer, screen, session } = require('electron');
 const path = require('path');
 const vault = require('./vault');
+const totp = require('./totp');
 const qr = require('./qr');
 
 let mainWindow = null;
 let regionWindow = null;
+let clipboardClearTimer = null;
 const APP_ICON = path.join(__dirname, '..', 'assets', 'icon.ico');
+
+function clearClipboardLater(text, delayMs = 30000) {
+  if (clipboardClearTimer) clearTimeout(clipboardClearTimer);
+  const expected = String(text || '');
+  clipboardClearTimer = setTimeout(() => {
+    clipboardClearTimer = null;
+    try {
+      if (clipboard.readText() === expected) clipboard.clear();
+    } catch {
+      // ignore clipboard races
+    }
+  }, delayMs);
+}
 
 function restoreMainWindow() {
   if (!mainWindow) return;
@@ -97,11 +112,8 @@ function selectQrRegion(display, screenshot) {
     });
 
     regionWindow.loadFile(path.join(__dirname, 'renderer', 'region-select.html'));
-    regionWindow.once('ready-to-show', () => {
+    regionWindow.webContents.once('did-finish-load', () => {
       if (!regionWindow || regionWindow.isDestroyed()) return;
-      regionWindow.show();
-      regionWindow.setAlwaysOnTop(true, 'screen-saver');
-      regionWindow.focus();
       regionWindow.webContents.send('region:init', {
         dataUrl: screenshot.toDataURL(),
         displayWidth: display.bounds.width,
@@ -110,18 +122,24 @@ function selectQrRegion(display, screenshot) {
         imageHeight: imageSize.height,
       });
     });
+    regionWindow.once('ready-to-show', () => {
+      if (!regionWindow || regionWindow.isDestroyed()) return;
+      regionWindow.show();
+      regionWindow.setAlwaysOnTop(true, 'screen-saver');
+      regionWindow.focus();
+    });
   });
 }
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 400,
-    height: 600,
+    width: 420,
+    height: 640,
     minWidth: 360,
     minHeight: 520,
     title: 'VaultOTP',
     icon: APP_ICON,
-    backgroundColor: '#0b1220',
+    backgroundColor: '#171717',
     show: false,
     frame: false,
     autoHideMenuBar: true,
@@ -148,12 +166,41 @@ function createWindow() {
   });
 }
 
-app.whenReady().then(() => {
+function allowCapturePermission(_webContents, permission) {
+  return permission === 'media' || permission === 'display-capture' || permission === 'clipboard-sanitized-write';
+}
+
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    restoreMainWindow();
+  });
+}
+
+app.whenReady().then(async () => {
+  if (!gotLock) return;
   if (process.platform === 'win32') {
     app.setAppUserModelId('com.vaultotp.app');
   }
   nativeTheme.themeSource = 'dark';
+
+  session.defaultSession.setPermissionCheckHandler((_webContents, permission) =>
+    allowCapturePermission(_webContents, permission)
+  );
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    callback(allowCapturePermission(_webContents, permission));
+  });
+
   vault.init();
+  await Promise.race([
+    totp.syncClock(),
+    new Promise((resolve) => setTimeout(resolve, 4000)),
+  ]);
+  setInterval(() => {
+    totp.syncClock().catch(() => {});
+  }, 10 * 60 * 1000);
   createWindow();
 
   app.on('activate', () => {
@@ -164,6 +211,13 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   vault.lock();
   if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('web-contents-created', (_event, contents) => {
+  contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  contents.on('will-navigate', (event, url) => {
+    if (!url.startsWith('file:')) event.preventDefault();
+  });
 });
 
 app.on('will-quit', () => {
@@ -385,7 +439,12 @@ ipcMain.handle('qr:scanScreen', async () => {
   }
 });
 
-ipcMain.handle('clipboard:write', (_e, text) => {
-  clipboard.writeText(String(text || ''));
+ipcMain.handle('clipboard:write', (_e, text, options) => {
+  const value = String(text || '');
+  clipboard.writeText(value);
+  const clearAfterMs = options && Number(options.clearAfterMs);
+  if (Number.isFinite(clearAfterMs) && clearAfterMs > 0) {
+    clearClipboardLater(value, clearAfterMs);
+  }
   return { ok: true };
 });

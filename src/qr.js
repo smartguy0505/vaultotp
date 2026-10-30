@@ -68,6 +68,9 @@ function parseScannedPayload(raw) {
       label: otpauth.label,
       issuer: otpauth.issuer,
       secret: otpauth.secret,
+      algorithm: otpauth.algorithm,
+      digits: otpauth.digits,
+      period: otpauth.period,
     };
   }
 
